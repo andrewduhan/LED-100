@@ -419,9 +419,7 @@
       "version": 3
     },
     "net_colors": null,
-    "netclass_assignments": {
-      "+5V": "VCC"
-    },
+    "netclass_assignments": null,
     "netclass_patterns": []
   },
   "pcbnew": {
