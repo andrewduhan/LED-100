@@ -7,5 +7,5 @@ Trim pots set the fade-in and fade-out time for all LEDs.
 
 Each output pin has an optional LED footprint for testing & debugging.
 
-<img width="610" src="https://github.com/andrewduhan/LED-100/blob/main/assets/pcb.png">
-<img width="610" src="https://github.com/andrewduhan/LED-100/blob/main/assets/schematic.png">
+<img width="610" src="https://raw.githubusercontent.com/andrewduhan/LED-100/refs/heads/main/assets/pcb.png">
+<img width="610" src="https://raw.githubusercontent.com/andrewduhan/LED-100/refs/heads/main/assets/schematic.png">
