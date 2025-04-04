@@ -1,4 +1,4 @@
-#include <TimerOne.h>
+IntervalTimer outputTimer;
 #include "Adafruit_TLC5947.h"
 
 // How many TLC5947s do you have chained?
@@ -6,7 +6,7 @@
 #define data  18
 #define clock 19
 #define latch 20
-#define oe    -1
+#define oe    15
 Adafruit_TLC5947 tlc = Adafruit_TLC5947(NUM_TLC5947, clock, data, latch);
 
 // 4-bit parallel address lines, shared to each of the 4 MC14514Bs
@@ -25,14 +25,15 @@ Adafruit_TLC5947 tlc = Adafruit_TLC5947(NUM_TLC5947, clock, data, latch);
 #define STROBE 4
 
 // FADEIN/OUT step size will be set by reading two trim pots in a later rev
-#define FADEIN_STEP_SIZE = 100;
-#define FADEOUT_STEP_SIZE = 100;
+int fadeStep = 100;
 
-// Hold the state of all 60 lamp signals from the MPU
+// Hold the binary state of all 60 lamp signals from the MPU
 uint64_t lamps = 0;
 
 // The order of lamps in the received data is different from the order that LED brightness data should be sent to the TLC5947s.
 // This map holds the keys; each the array position for each TLC channel holds the corresponding position in the 64 lamps bits.
+// Some lamps (10, 11, 25, 26, 40, 41, 55, 56) appear twice in this array, as the LDA-100 SCAs were wired to two different 
+// outputs. (usually playfield + backbox)
 const int tlcChannelMap[72] = { 19, 18, 25, 23, 22, 21, 17, 16, 20, 24, 26, 37,  4,  5,  6,  2,  0,  1,  3,  8,  9, 10, 11,  7, 
                                 27, 12, 10, 28, 13, 29, 14, 11, 26, 42, 57, 40, 25, 58, 43, 55, 41, 56, 44, 59, 60, 61, 62, 63, 
                                 45, 52, 50, 51, 49, 53, 48, 46, 55, 56, 47, 34, 33, 54, 32, 39, 38, 40, 35, 41, 31, 30, 36, 15 };
@@ -40,18 +41,19 @@ const int tlcChannelMap[72] = { 19, 18, 25, 23, 22, 21, 17, 16, 20, 24, 26, 37, 
 // keep track of the last strobed address.
 byte selectedAddress = 0b00000000;
 byte tempAddress = 0b00000000;
+int tmpPwm;
 
 // we'll only change lamp states between address 0 and 15 - then stay in a holding pattern until address 0 comes around again.
 bool itsInputTime = false;
-bool itsOutputTime = false;
+
+// set to false to ignore the MPU data
+bool readInputs = false;
 
 // Each LED gets a 12-bit brightness value;
 // At some regular interval, lamps that are set ON by the inputs have their brightness value increased to a max of 4098
 // and lamps that are OFF decrease to a min of zero.
 
 void setup() {
-  // pinMode(LED_BUILTIN, OUTPUT);
-  // digitalWrite(LED_BUILTIN, HIGH);
   // on the LDA-100, all lines are pulled up to 5V
   pinMode(STROBE, INPUT_PULLUP);
   pinMode(AD0, INPUT_PULLUP);
@@ -74,20 +76,20 @@ void setup() {
   attachInterrupt(PD3, setLamp3, FALLING);
 
   if (oe >= 0) {
-    pinMode(oe, OUTPUT);
+    pinMode(oe, OUTPUT );
     digitalWrite(oe, LOW);
   }
   tlc.begin();
-  
-  Timer1.initialize(8000);
-  Timer1.attachInterrupt(setOutputTime);
+  outputTimer.begin(updateAllLEDs, 5000);
+  outputTimer.begin(randLamps, 100000);
 }
 
 void loop() {
-  if (!itsInputTime){
-    updateAllLEDs();
-    itsOutputTime = false;
-    delay(100);
+}
+
+void randLamps(){
+  for (int i = 0; i < 72; i++){
+    bitWrite(lamps, i, random(5) == 0 ? 1 : 0);
   }
 }
 
@@ -120,14 +122,15 @@ void captureAddress(){
   bitWrite(tempAddress, 3, digitalRead(AD3));
   if (selectedAddress != tempAddress){
     selectedAddress = tempAddress;
-    if (selectedAddress < 15){
+    if (selectedAddress < 15 && readInputs){
       // only see a non-15 address when we're in the input stage
       itsInputTime = true;
     }
     if (selectedAddress == 0){
       // The SCRs on an LDA-100 would hold a lamp lit until the next zero crossing interrupt, roughly at 120hz (twice per cycle), 
       // which would cause all SCRs to shut off until the next address cycle.
-      // We'll treat address 0000 as the mark between two passes.
+      // We'll treat address 0000 as the mark between two passes, and set all lamps to "off"; 
+      // ...if they are meant to stay on, the setLamp ISRs will correct this.
       lamps = 0;
     }
     if (selectedAddress == 15) {
@@ -139,51 +142,24 @@ void captureAddress(){
   }
 }
 
-void setOutputTime(){
-  itsOutputTime = true;
-}
-
 void updateAllLEDs(){
-  for (int i = 0; i < 72; i++){
-    updateLED(i);
+  if (!itsInputTime){
+    for (int i = 0; i < 72; i++){
+      updateLED(i);
+    }
+    tlc.write();
   }
-  tlc.write();
 }
 
 void updateLED(int channel){
   bool lampIsOn = bitRead(lamps, tlcChannelMap[channel]);
   if (lampIsOn){
-    brightenLED(channel);
+    tmpPwm = tlc.getPWM(channel) + fadeStep;
   } else {
-    dimmenLED(channel);
+    tmpPwm = tlc.getPWM(channel) - fadeStep;
   }
+  tlc.setPWM(channel, constrain(tmpPwm, 0, 4095));
 }
-
-void brightenLED(int channel){
-  // int newPwm = tlc.getPWM(channel) + FADEIN_STEP_SIZE;
-  // if (newPwm > 4096) {
-  //   newPwm = 4096;
-  // } 
-  // tlc.setPWM(channel, newPwm);
-  tlc.setPWM(channel, 4096);
-}
-
-void dimmenLED(int channel){
-  // int newPwm = tlc.getPWM(channel) - FADEOUT_STEP_SIZE;
-  // if (newPwm < 0) {
-  //   newPwm = 0;
-  // } 
-  // tlc.setPWM(channel, newPwm);
-  tlc.setPWM(channel, 0);
-}
-
-// void updateLEDs(){
-//   printInt(lamps3, 16);
-//   printInt(lamps2, 16);
-//   printInt(lamps1, 16);
-//   printInt(lamps0, 16);
-//   Serial.println();
-// }
 
 // void printInt(int thingy, int n){
 // // prints an n-bit int in binary style, with zero-padding.
