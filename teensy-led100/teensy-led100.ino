@@ -1,57 +1,59 @@
-IntervalTimer lampRandTimer;
-IntervalTimer outputTimer;
-
 #include "Adafruit_TLC5947.h"
+IntervalTimer lampRandTimer;
+IntervalTimer readPotTimer;
+IntervalTimer outputTimer;
 
 #define NUM_TLC5947   3
 #define data         12
 #define clock        13
 #define latch        14
-#define oe           -1  // set to -1 to not use the enable pin (its optional)
-
+#define oe           15  // Not used atm; seems to fuck everything up.
 // 4-bit parallel address lines, shared to each of the 4 MC14514Bs
 #define AD0 3
 #define AD1 2
 #define AD2 1
 #define AD3 0
-
 // A MC14514B's outputs are LOW when the PDx line (inhibit) is HIGH.   
 #define PD0 9
 #define PD1 10
 #define PD2 11
 #define PD3 12
-
-// strobe 0 = data latch, strobe 1 = transparent data input.
-#define STROBE 4
-
-#define adjustPot     9
-#define selectSwitch 11
+#define STROBE 4 // strobe 0 = data latch, strobe 1 = transparent data input.
+#define adjustPot    A9 // pin 25 aka digital 23
+#define selectSwitch 11 // pin 13
 
 Adafruit_TLC5947 tlc = Adafruit_TLC5947(NUM_TLC5947, clock, data, latch);
 
-// keep track of the last strobed address.
-byte selectedAddress = 0b00000000;
-byte tempAddress = 0b00000000;
-int tmpPwm;
+bool lamps[64]; // Hold the state of all 60 lamp signals from the MPU, plus 4 bonus lamps
+byte selectedAddress = 0b00000000; // keep track of the last strobed address.
 
-int fadeTimeMs = 150; // in milliseconds - to be set later by adjustPot
-int LEDUpdateInterval = 10000; // frequency that we push out LED data, in microseconds
-int maxBrightness = 150; // 0 to 4095
-int fadeStepCount = (fadeTimeMs * 1000) / LEDUpdateInterval;
-int fadeStep = maxBrightness / fadeStepCount;
+// interval to push out LED data, in microseconds. 
+// Too high and you may see flicker or "aliasing", too low and there may not be enough time between pushes
+int LEDUpdateInterval = 5000; 
 
-// Hold the state of all 60 lamp signals from the MPU, plus the 4 bonus lamps
-bool lamps[64];
+int maxBrightness = 4095;     // How bright should the LEDs be?  0 = 0%, 4095 = 100%
 
-// we'll only change lamp states between address 0 and 15 - then stay in a holding pattern until address 0 comes around again.
+// Initialize these three vars - they will be updated at runtime if the pot is adjusted. 
+int fadeTimeMs = 0;           // in milliseconds - adjusted by the pot.
+int fadeStepCount = 1;        // steps between off and fully on - changes as fateTimeMs changes.
+int fadeStepSize = 4095;      // step size (both brighter and darker) for each 
+
+// we'll only change lamp states between address 0 and 15,
+// then stay in a holding pattern until address 0 comes around again.
 bool itsInputTime = false;
 
 // The order of lamps in the received data is different from the order of the TLC5947 ouputs.
-// This map holds the keys; each the array position for each of the 72 TLC channels holds the corresponding position in the 
-// 64 lamp bools.
+// This map is the key; each array position for the 72 TLC channels holds the corresponding position in the 60 (+4) lamp bools.
+// Some lamps are duplicated here because some SCRs on the original board would drive two different outputs.
+// (usually for things like SHOOT AGAIN that light on both playfield + backbox)
 const int tlcChannelMap[72] = { 19, 18, 25, 23, 22, 21, 17, 16, 20, 24, 26, 37,  4,  5,  6,  2,  0,  1,  3,  8,  9, 10, 11,  7, 
                                 27, 12, 10, 28, 13, 29, 14, 11, 26, 42, 57, 40, 25, 58, 43, 55, 41, 56, 44, 59, 60, 61, 62, 63, 
                                 45, 52, 50, 51, 49, 53, 48, 46, 55, 56, 47, 34, 33, 54, 32, 39, 38, 40, 35, 41, 31, 30, 36, 15 };
+
+// only init these temp vars once;
+byte tempAddress = 0b00000000;
+int tempPwm = 0;
+int tempPotVal = 0;                                
 
 void setup() {
   // on the LDA-100, all lines are pulled up to 5V
@@ -76,10 +78,11 @@ void setup() {
   attachInterrupt(PD3, setLamp3, FALLING);
 
   tlc.begin();
-  pinMode(adjustPot, INPUT);
-
   lampsOff();
-  lampRandTimer.begin(randAllLamps, 250000);
+
+  // lampRandTimer.begin(randAllLamps, 125000); // pretty lights for testing 
+
+  readPotTimer.begin(readPot, 250000);
   outputTimer.begin(updateAllLEDs, LEDUpdateInterval);
 }
 
@@ -114,33 +117,38 @@ void setLamp3(){
   }
 }
 
-void randAllLamps(){
-  for (int i = 0; i < 60; i++){
-    lamps[i] = random(2) == 1;
-  }
-}
-
 void captureAddress(){
+  // A Bit Of Theory about the signal from the MPU: 
+  // About 120 times per second, there is a 'dip' in 5V power rails that feeds the lamps. This causes all SCRs on the LDA-100 
+  // to shut off. Immediately after this, the MPU signals the LDA-100 to turn on any lamps that should be on. 
+  // Thus, the lamp signals are only "turn these on".
+  //
+  // Data for the 60 lamps arrives in 15 batches of 4. First, the 4-bit address 0000 is strobed into the decoders. Then, 0-4 of 
+  // the PDx lines are toggled low, triggering the SCR for any of lamps 0, 16, 32, or 48 that should be on.
+  // Next, the 4-bit address 0001 is stobed in, and the process repeats through 1110.
+  // 1111 (or 15) is special - no lamps are attached to 1111, so this is a no-op.
+  //
+  // Once all 16 addresses (0-15) have been sent to the LDA-100, the Strobe may go low a few times before the next full address cycle,
+  // but the address remains 1111, so these can be ignored.
+
+  // When STROBE falls, we should read a new address and store it as selectedAddress for use in subsequent PDx changes.
   tempAddress = 0b00000000;
   bitWrite(tempAddress, 0, digitalRead(AD0));
   bitWrite(tempAddress, 1, digitalRead(AD1));
   bitWrite(tempAddress, 2, digitalRead(AD2));
   bitWrite(tempAddress, 3, digitalRead(AD3));
+
   if (selectedAddress != tempAddress){
     selectedAddress = tempAddress;
-    if (selectedAddress < 15){
-      // only see a non-15 address when we're in the input stage
+    if (selectedAddress == 0){
+      // We are at the start of new lamp signal data, so we momentarily blank our lamps.
+      // Note to self: It might be nice to hold the new data in a shadow array and swap or update the primary array(?)
+      lampsOff();
       itsInputTime = true;
     }
-    if (selectedAddress == 0){
-      // The SCRs on an LDA-100 would hold a lamp lit until the next zero crossing interrupt, roughly at 120hz (twice per cycle), 
-      // which would cause all SCRs to shut off until the next address cycle.
-      // We'll treat address 0000 as the mark between two passes.
-      lampsOff();
-    }
     if (selectedAddress == 15) {
-      // Address 15 gets set several times outside of the lamp codes.
-      // No lamps are attached to any pin 15, so it's used as a "rest" 
+      // Address 15 gets set at the end of the main sequence, and also several times outside of it.
+      // No lamps are attached to any pin 15, so it's used as a "rest" signal here - we dont' want to update lamp values until we get 0000.
       itsInputTime = false;
     }
   }
@@ -158,17 +166,30 @@ void updateLED(int channel){
   bool lampIsOn = lamps[tlcChannelMap[channel]];
   // fade the lamp toward on-ness or off-ness
   if (lampIsOn){
-    tmpPwm = tlc.getPWM(channel) + fadeStep;
+    tempPwm = tlc.getPWM(channel) + fadeStepSize;
   } else {
-    tmpPwm = tlc.getPWM(channel) - fadeStep;
+    tempPwm = tlc.getPWM(channel) - fadeStepSize;
   }
-  tlc.setPWM(channel, constrain(tmpPwm, 0, maxBrightness));
-}void setup() {
-  // put your setup code here, to run once:
-
+  tlc.setPWM(channel, constrain(tempPwm, 0, maxBrightness));
 }
 
-void loop() {
-  // put your main code here, to run repeatedly:
+void readPot(){
+  // This routine reads the pot setting and calculates new stepsize. 
+  // Should be called fairly infrequently (4hz maybe?)
+  tempPotVal = constrain(analogRead(adjustPot), 0, 1000);
+  if (tempPotVal == fadeTimeMs){
+    return;
+  }
+  fadeTimeMs = tempPotVal; 
+  fadeStepCount = (fadeTimeMs * 10000) / LEDUpdateInterval; // number of brightness steps between off and on
+  if (fadeStepCount <= 0){
+    fadeStepCount = 1;
+  } 
+  fadeStepSize = (maxBrightness * 10) / fadeStepCount; // size of each brightness step.
+}
 
+void randAllLamps(){
+  for (int i = 0; i < 60; i++){
+    lamps[i] = random(4) == 1;
+  }
 }
