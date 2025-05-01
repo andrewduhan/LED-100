@@ -31,12 +31,14 @@ byte selectedAddress = 0b00000000; // keep track of the last strobed address.
 // Too high and you may see flicker or "aliasing", too low and there may not be enough time between pushes
 int LEDUpdateInterval = 5000; 
 
-int maxBrightness = 4095;     // How bright should the LEDs be?  0 = 0%, 4095 = 100%
+int maxBrightness = 200;     // How bright should the LEDs be?  0 = 0%, 4095 = 100%
 
 // Initialize these three vars - they will be updated at runtime if the pot is adjusted. 
 int fadeTimeMs = 0;           // in milliseconds - adjusted by the pot.
 int fadeStepCount = 1;        // steps between off and fully on - changes as fateTimeMs changes.
 int fadeStepSize = 4095;      // step size (both brighter and darker) for each 
+
+int lampPos = 0;
 
 // we'll only change lamp states between address 0 and 15,
 // then stay in a holding pattern until address 0 comes around again.
@@ -53,7 +55,8 @@ const int tlcChannelMap[72] = { 19, 18, 25, 23, 22, 21, 17, 16, 20, 24, 26, 37, 
 // only init these temp vars once;
 byte tempAddress = 0b00000000;
 int tempPwm = 0;
-int tempPotVal = 0;                                
+int tempPotVal = 0;        
+bool switchPressed = false;                        
 
 void setup() {
   // on the LDA-100, all lines are pulled up to 5V
@@ -66,6 +69,7 @@ void setup() {
   pinMode(PD1, INPUT_PULLUP);
   pinMode(PD2, INPUT_PULLUP);
   pinMode(PD3, INPUT_PULLUP);
+  pinMode(selectSwitch, INPUT_PULLUP);
 
   // The MPU walks through all 16 addresses (0 to 15) and pulses the strobe line LOW to latch the address into the chips.
   // So we need to keep track of the most recently strobed address for use if/when the PD lines are triggered
@@ -77,17 +81,25 @@ void setup() {
   attachInterrupt(PD2, setLamp2, FALLING);
   attachInterrupt(PD3, setLamp3, FALLING);
 
+  attachInterrupt(selectSwitch, switchPress, FALLING);
+
   tlc.begin();
   lampsOff();
 
   // lampRandTimer.begin(randAllLamps, 125000); // pretty lights for testing 
+  lampRandTimer.begin(cycleLamps, 125000); // pretty lights for testing 
 
   readPotTimer.begin(readPot, 250000);
   outputTimer.begin(updateAllLEDs, LEDUpdateInterval);
 }
 
 void loop() {
-
+  if(switchPressed){
+    Serial.println("beep!");
+    switchPressed = false;
+  }
+  Serial.println(fadeStepCount);
+  delay(500);
 }
 
 void lampsOff(){
@@ -176,20 +188,28 @@ void updateLED(int channel){
 void readPot(){
   // This routine reads the pot setting and calculates new stepsize. 
   // Should be called fairly infrequently (4hz maybe?)
-  tempPotVal = constrain(analogRead(adjustPot), 0, 1000);
-  if (tempPotVal == fadeTimeMs){
-    return;
-  }
+  tempPotVal = analogRead(adjustPot);
+  tempPotVal = (0.1 * (tempPotVal * tempPotVal)) / (1024 * 0.1) ; // parabolize dis shiii
   fadeTimeMs = tempPotVal; 
-  fadeStepCount = (fadeTimeMs * 10000) / LEDUpdateInterval; // number of brightness steps between off and on
-  if (fadeStepCount <= 0){
-    fadeStepCount = 1;
-  } 
+  fadeStepCount = constrain((fadeTimeMs * 10000) / LEDUpdateInterval, 1, 2000); // number of brightness steps between off and on
   fadeStepSize = (maxBrightness * 10) / fadeStepCount; // size of each brightness step.
+}
+
+void switchPress(){
+  switchPressed = true;
 }
 
 void randAllLamps(){
   for (int i = 0; i < 60; i++){
-    lamps[i] = random(4) == 1;
+    lamps[i] = random(6) == 1;
+  }
+}
+
+void cycleLamps(){
+  lampsOff();
+  lamps[tlcChannelMap[lampPos + 1]] = true;
+  lampPos += 1;
+  if (lampPos == 72){
+    lampPos = 0; 
   }
 }
