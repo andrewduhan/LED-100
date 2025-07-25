@@ -1,6 +1,6 @@
 #include "Adafruit_TLC5947.h"
 IntervalTimer lampRandTimer;
-IntervalTimer readPotTimer;
+// IntervalTimer readPotTimer;
 IntervalTimer outputTimer;
 
 #define NUM_TLC5947   3
@@ -14,10 +14,11 @@ IntervalTimer outputTimer;
 #define AD2 1
 #define AD3 0
 // A MC14514B's outputs are LOW when the PDx line (inhibit) is HIGH.   
-#define PD0 9
-#define PD1 10
-#define PD2 11
-#define PD3 12
+int PDs[4] = {9, 10, 11, 12};
+// #define PD0 9
+// #define PD1 10
+// #define PD2 11
+// #define PD3 12
 #define STROBE 4 // strobe 0 = data latch, strobe 1 = transparent data input.
 #define adjustPot    A9 // pin 25 aka digital 23
 #define selectSwitch 11 // pin 13
@@ -28,21 +29,23 @@ bool lamps[64]; // Hold the state of all 60 lamp signals from the MPU, plus 4 bo
 byte selectedAddress = 0b00000000; // keep track of the last strobed address.
 
 // interval to push out LED data, in microseconds. 
-// Too high and you may see flicker or "aliasing", too low and there may not be enough time between pushes
-int LEDUpdateInterval = 5000; 
+// Too high and you may see individual brightness steps, too low and there may not be enough time between pushes to do the needful.
+// 10000us = 100hz
+int LEDUpdateInterval = 10000; 
 
-int maxBrightness = 200;     // How bright should the LEDs be?  0 = 0%, 4095 = 100%
+int maxBrightness = 4095;     // How bright can the LEDs get?  0 = 0%, 4095 = 100%
 
 // Initialize these three vars - they will be updated at runtime if the pot is adjusted. 
 int fadeTimeMs = 0;           // in milliseconds - adjusted by the pot.
-int fadeStepCount = 1;        // steps between off and fully on - changes as fateTimeMs changes.
-int fadeStepSize = 4095;      // step size (both brighter and darker) for each 
+int fadeStepCount = 1;        // steps between off and fully on - updated when fateTimeMs changes.
+int fadeStepSize = 4095;      // step size (both brighter and darker) for LED output smoothing - updated when fadeStepCount changes. 
+
+// int fadeStepSize = 4095;
 
 int lampPos = 0;
 
-// we'll only change lamp states between address 0 and 15,
-// then stay in a holding pattern until address 0 comes around again.
-bool itsInputTime = false;
+// Lamp data can come in at any time while STROBE is low, and should be ignored when STROBE is high.
+bool itsCaptureTime = false;
 
 // The order of lamps in the received data is different from the order of the TLC5947 ouputs.
 // This map is the key; each array position for the 72 TLC channels holds the corresponding position in the 60 (+4) lamp bools.
@@ -56,7 +59,7 @@ const int tlcChannelMap[72] = { 19, 18, 25, 23, 22, 21, 17, 16, 20, 24, 26, 37, 
 byte tempAddress = 0b00000000;
 int tempPwm = 0;
 int tempPotVal = 0;        
-bool switchPressed = false;                        
+// bool switchPressed = false;                        
 
 void setup() {
   // on the LDA-100, all lines are pulled up to 5V
@@ -65,85 +68,97 @@ void setup() {
   pinMode(AD1, INPUT_PULLUP);
   pinMode(AD2, INPUT_PULLUP);
   pinMode(AD3, INPUT_PULLUP);
-  pinMode(PD0, INPUT_PULLUP);
-  pinMode(PD1, INPUT_PULLUP);
-  pinMode(PD2, INPUT_PULLUP);
-  pinMode(PD3, INPUT_PULLUP);
+  pinMode(PDs[0], INPUT_PULLUP);
+  pinMode(PDs[1], INPUT_PULLUP);
+  pinMode(PDs[2], INPUT_PULLUP);
+  pinMode(PDs[3], INPUT_PULLUP);
   pinMode(selectSwitch, INPUT_PULLUP);
+
+  setAllLamps(false);
+  tlc.begin();
+
+  // lampRandTimer.begin(randAllLamps, 125000); // pretty lights for testing 
+  // lampRandTimer.begin(cycleLamps, 125000); // pretty lights for testing 
+  // lampRandTimer.begin(flashAllLamps, 1000000); // pretty lights for testing 
 
   // The MPU walks through all 16 addresses (0 to 15) and pulses the strobe line LOW to latch the address into the chips.
   // So we need to keep track of the most recently strobed address for use if/when the PD lines are triggered
-  attachInterrupt(STROBE, captureAddress, FALLING);
+  attachInterrupt(STROBE, setCapturetimeTrue, FALLING);
+  attachInterrupt(STROBE, setCaptureTimeFalse, RISING);
 
-  // Then the LDx lines get pulled low to select which chips should turn ON for that address.
-  attachInterrupt(PD0, setLamp0, FALLING);
-  attachInterrupt(PD1, setLamp1, FALLING);
-  attachInterrupt(PD2, setLamp2, FALLING);
-  attachInterrupt(PD3, setLamp3, FALLING);
-
-  attachInterrupt(selectSwitch, switchPress, FALLING);
-
-  tlc.begin();
-  lampsOff();
-
-  // lampRandTimer.begin(randAllLamps, 125000); // pretty lights for testing 
-  lampRandTimer.begin(cycleLamps, 125000); // pretty lights for testing 
-
-  readPotTimer.begin(readPot, 250000);
+  // readPotTimer.begin(readPot, 250000);
   outputTimer.begin(updateAllLEDs, LEDUpdateInterval);
 }
 
 void loop() {
-  if(switchPressed){
-    Serial.println("beep!");
-    switchPressed = false;
-  }
-  Serial.println(fadeStepCount);
-  delay(500);
+  captureAddress();
+  setLampValues();
 }
 
-void lampsOff(){
+void setCaptureTimeFalse(){
+  itsCaptureTime = false;
+}
+
+void setCapturetimeTrue(){
+  itsCaptureTime = true;
+}
+
+void setLampValues() {
+  if(itsCaptureTime){
+    // For each of the lamps associated with selectedAddress, turn them on if their PD line is LOW.
+    // There is no "off" signal; all lamps are re-blanked once per ~120hz cycle.
+    for (int i = 0; i < 4; i++){
+      if ( digitalRead(PDs[i]) == LOW ){
+        lamps[i + (i + 16)] = true;
+      }
+    }
+  }
+}
+
+void setAllLamps(bool v){
   for (int i = 0; i < 64; i++){
-    lamps[i] = false;
+    lamps[i] = v;
   }
 }
 
-void setLamp0(){
-  if (itsInputTime){
-    lamps[selectedAddress] = true;
-  }
-}
-void setLamp1(){
-  if (itsInputTime){
-    lamps[selectedAddress + 16] = true;
-  }
-}
-void setLamp2(){
-  if (itsInputTime){
-    lamps[selectedAddress + 32] = true;
-  }
-}
-void setLamp3(){
-  if (itsInputTime){
-    lamps[selectedAddress + 48] = true;
-  }
-}
+// void setLamp0(){
+//   if (itsInputTime){
+//     lamps[selectedAddress] = true;
+//   }
+// }
+// void setLamp1(){
+//   if (itsInputTime){
+//     lamps[selectedAddress + 16] = true;
+//   }
+// }
+// void setLamp2(){
+//   if (itsInputTime){
+//     lamps[selectedAddress + 32] = true;
+//   }
+// }
+// void setLamp3(){
+//   if (itsInputTime){
+//     lamps[selectedAddress + 48] = true;
+//   }
+// }
 
 void captureAddress(){
   // A Bit Of Theory about the signal from the MPU: 
   // About 120 times per second, there is a 'dip' in 5V power rails that feeds the lamps. This causes all SCRs on the LDA-100 
-  // to shut off. Immediately after this, the MPU signals the LDA-100 to turn on any lamps that should be on. 
+  // to shut off. Immediately after this, the MPU begins signalling the LDA-100 to turn on any lamps that should be on, in batches. 
   // Thus, the lamp signals are only "turn these on".
   //
-  // Data for the 60 lamps arrives in 15 batches of 4. First, the 4-bit address 0000 is strobed into the decoders. Then, 0-4 of 
+  // Data for the 60 lamps arrives in 15 batches of 4. First, the 4-bit address 0000 (0) is strobed into the decoders. Then, 0-4 of 
   // the PDx lines are toggled low, triggering the SCR for any of lamps 0, 16, 32, or 48 that should be on.
-  // Next, the 4-bit address 0001 is stobed in, and the process repeats through 1110.
-  // 1111 (or 15) is special - no lamps are attached to 1111, so this is a no-op.
+  // Next, the 4-bit address 0001 (1) is stobed in, and the process repeats through 1111 (15).
+  // 1111 is special - no SCRs/lamps are attached to 1111, so this is a no-op.
   //
   // Once all 16 addresses (0-15) have been sent to the LDA-100, the Strobe may go low a few times before the next full address cycle,
   // but the address remains 1111, so these can be ignored.
 
-  // When STROBE falls, we should read a new address and store it as selectedAddress for use in subsequent PDx changes.
+  // When STROBE falls, we should read a the address from the ADx pins and store it as selectedAddress for use in subsequent PDx changes.
+  
+  // 
   tempAddress = 0b00000000;
   bitWrite(tempAddress, 0, digitalRead(AD0));
   bitWrite(tempAddress, 1, digitalRead(AD1));
@@ -152,17 +167,19 @@ void captureAddress(){
 
   if (selectedAddress != tempAddress){
     selectedAddress = tempAddress;
+    Serial.println(selectedAddress);
     if (selectedAddress == 0){
-      // We are at the start of new lamp signal data, so we momentarily blank our lamps.
+      // We are at the start of new lamp signal data, so we momentarily blank our lamps, because the MPU never signals a lamp to turn off, 
+      // only which should be on.
       // Note to self: It might be nice to hold the new data in a shadow array and swap or update the primary array(?)
-      lampsOff();
+      setAllLamps(false);
       itsInputTime = true;
     }
-    if (selectedAddress == 15) {
+    if (selectedAddress == 15){
       // Address 15 gets set at the end of the main sequence, and also several times outside of it.
-      // No lamps are attached to any pin 15, so it's used as a "rest" signal here - we dont' want to update lamp values until we get 0000.
+      // No lamps are attached to any pin 15, so it's used as a "rest" signal here - we don't want to update lamp values until we get a 0000 again.
       itsInputTime = false;
-    }
+    } 
   }
 }
 
@@ -174,10 +191,9 @@ void updateAllLEDs(){
 }
 
 void updateLED(int channel){
-  // check the lamps array - should this light be on?
-  bool lampIsOn = lamps[tlcChannelMap[channel]];
-  // fade the lamp toward on-ness or off-ness
-  if (lampIsOn){
+  // Check the lamps array - should this light be on?
+  // Then fade the lamp toward on-ness or off-ness
+  if (lamps[tlcChannelMap[channel]]){
     tempPwm = tlc.getPWM(channel) + fadeStepSize;
   } else {
     tempPwm = tlc.getPWM(channel) - fadeStepSize;
@@ -188,16 +204,18 @@ void updateLED(int channel){
 void readPot(){
   // This routine reads the pot setting and calculates new stepsize. 
   // Should be called fairly infrequently (4hz maybe?)
+  // linearFadeStepSize = analogRead(adjustPot) * 4;
+
   tempPotVal = analogRead(adjustPot);
-  tempPotVal = (0.1 * (tempPotVal * tempPotVal)) / (1024 * 0.1) ; // parabolize dis shiii
+  tempPotVal = ((0.1 * tempPotVal) * (0.1 * tempPotVal)) / 10 ; // lower sensitvity for lower values - parabolic
   fadeTimeMs = tempPotVal; 
-  fadeStepCount = constrain((fadeTimeMs * 10000) / LEDUpdateInterval, 1, 2000); // number of brightness steps between off and on
+  fadeStepCount = constrain((fadeTimeMs * 10000) / LEDUpdateInterval, 1, 10000); // number of brightness steps between off and on
   fadeStepSize = (maxBrightness * 10) / fadeStepCount; // size of each brightness step.
 }
 
-void switchPress(){
-  switchPressed = true;
-}
+// void switchPress(){
+//   switchPressed = true;
+// }
 
 void randAllLamps(){
   for (int i = 0; i < 60; i++){
@@ -206,10 +224,18 @@ void randAllLamps(){
 }
 
 void cycleLamps(){
-  lampsOff();
+  setAllLamps(false);
   lamps[tlcChannelMap[lampPos + 1]] = true;
   lampPos += 1;
   if (lampPos == 72){
     lampPos = 0; 
+  }
+}
+
+void flashAllLamps(){
+  if (lamps[0]){
+    setAllLamps(false);
+  } else {
+    setAllLamps(true);
   }
 }
