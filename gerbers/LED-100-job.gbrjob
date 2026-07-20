@@ -3,19 +3,19 @@
     "GenerationSoftware": {
       "Vendor": "KiCad",
       "Application": "Pcbnew",
-      "Version": "9.0.1"
+      "Version": "10.0.4"
     },
-    "CreationDate": "2025-04-03T16:54:10-05:00"
+    "CreationDate": "2026-07-19T13:19:48-05:00"
   },
   "GeneralSpecs": {
     "ProjectId": {
       "Name": "LED-100",
       "GUID": "4c45442d-3130-4302-9e6b-696361645f70",
-      "Revision": "3"
+      "Revision": "4"
     },
     "Size": {
-      "X": 100.1,
-      "Y": 100.1
+      "X": 99.1,
+      "Y": 99.1
     },
     "LayerNumber": 2,
     "BoardThickness": 1.6,
