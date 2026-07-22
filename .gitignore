@@ -19,6 +19,9 @@ fp-info-cache
 ~*.lck
 \#auto_saved_files#
 
+# KiCad Local History (File > Local History) - local snapshots, not project source
+.history/
+
 *.DS_Store
 
 # Netlist files (exported from Eeschema)
@@ -30,4 +33,3 @@ fp-info-cache
 
 # Exported BOM files
 *.xml
-*.csv

@@ -89,19 +89,21 @@
 TLC5947 tlc(NUM_TLC5947, TLC_CLOCK, TLC_DATA, TLC_LATCH, TLC_BLANK);
 
 // ---- Inputs from the MPU ----
-#define PIN_AD0    3
-#define PIN_AD1    2
-#define PIN_AD2    1
-#define PIN_AD3    0
-#define PIN_PD0    5
-#define PIN_PD1    6
-#define PIN_PD2    7
-#define PIN_PD3    8
-#define PIN_STROBE 4   // must be interrupt-capable (all Teensy 4 pins are)
+#define PIN_AD0    5
+#define PIN_AD1    4
+#define PIN_AD2    3
+#define PIN_AD3    2
+#define PIN_PD0    7
+#define PIN_PD1    8
+#define PIN_PD2    9
+#define PIN_PD3    10
+#define PIN_STROBE 6   // must be interrupt-capable (all Teensy 4 pins are)
 
 // ---- Front-panel controls ----
-#define PIN_DEMO_SWITCH 11   // momentary to GND -> pullup, active low
-#define PIN_POT_FADE    A9   // one pot; sets fade-in, fade-out follows it
+#define PIN_DEMO_SWITCH 23   // momentary to GND -> pullup, active low
+#define PIN_POT_FADE    A3   // one pot; sets fade-in, fade-out follows it
+#define PIN_POT_BRIGHT  A2   // placeholder: the pot is on the board but nothing reads it yet. Current idea is scaling max output
+                             // brightness below 100%, but it may become fade-out time instead, or be dropped to save BOM cost.
 
 // ---- Fade behaviour ----
 const uint32_t FADE_TICK_MS = 5;     // 200Hz; well above flicker perception
@@ -127,22 +129,20 @@ const uint32_t DEBOUNCE_MS    = 50;
 // ==================================================================
 // Which lamp bit (pd * 16 + addr) drives which TLC5947 output channel. Several channels legitimately share a bit: some original 
 // lamp drivers fed two SCRs, lighting the same signal on both the playfield and the backbox.
-// LAMP_BIT_NONE marks a channel nothing drives; it stays dark.
+// DED marks a channel nothing drives; it is a dark-emitting LED.
 //
 // NOTE: this table has not yet been reconciled against the original board and is known to be at least partly wrong. 
 // Channels 58, 68 and 71 map to bits 47, 31 and 15 - all of which are addr==15, the end-of-frame sentinel, so no PD pulse can 
 // ever set them and those channels can never light. Lamp bits 60, 61 and 62 are meanwhile mapped to no channel at all. Left 
 // as-is deliberately, pending a proper review against the machine.
-const uint8_t LAMP_BIT_NONE = 0xFF;
+const uint8_t DED = 0xFF;
 
 const uint8_t channelToLampBit[NUM_CHANNELS] = {
-  19, 18, 25, 23, 22, 21, 17, 16, 20, 24, 26, 37,  4,  5,  6,  2,  0,  1,  3,  8,  9, 10, 11,  7,
-  27, 12, 10, 28, 13, 29, 14, 11, 26, 42, 57, 40, 25, 58, 43, 55, 41, 56, 44, 59,
-  LAMP_BIT_NONE, LAMP_BIT_NONE, LAMP_BIT_NONE, LAMP_BIT_NONE,
-  45, 52, 50, 51, 49, 53, 48, 46, 55, 56, 47, 34, 33, 54, 32, 39, 38, 40, 35, 41, 31, 30, 36, 15
+  27, 12, 10, 28, 13, 29, 14, 11, 26, 42, 57, 40, 25, 58, 43, 55, 41, 56, 44, 59, DED, DED, DED, DED,
+  45, 52, 50, 51, 49, 53, 48, 46, 55, 56, 47, 34, 33, 54, 32, 39, 38, 40, 35, 41, 31, 30, 36, 15,
+  19, 18, 25, 23, 22, 21, 17, 16, 20, 24, 26, 37,  4,  5,  6,  2,  0,  1,  3,  8,  9, 10, 11,  7
 };
-static_assert(sizeof(channelToLampBit) == NUM_CHANNELS,
-              "lamp map must have exactly one entry per TLC5947 channel");
+static_assert(sizeof(channelToLampBit) == NUM_CHANNELS, "lamp map must have exactly one entry per TLC5947 channel");
 
 // ==================================================================
 // Frame handoff
@@ -205,8 +205,7 @@ const uint8_t ADDR_NONE        = 0xFF;  // no frame in progress
 
 // Written by strobeISR, read by the PD ISRs.
 volatile uint8_t latchedAddr    = ADDR_NONE;  // the address the current frame is on
-volatile uint8_t lastStrobeAddr = ADDR_NONE;  // the address on the most recent strobe of
-                                              // ANY kind, ours or an interloper's
+volatile uint8_t lastStrobeAddr = ADDR_NONE;  // the address on the most recent strobe of ANY kind, ours or an interloper's
 
 // The frame being accumulated, one uint16 per PD group, one bit per address.
 // Private to the ISRs; packed into a uint64 and published at end-of-frame.
@@ -387,40 +386,33 @@ void servicePot(uint32_t now) {
 // ==================================================================
 // Load meter  (bench only - see ENABLE_LOAD_METER)
 // ==================================================================
-// Answers "how hard is the Teensy actually working, and what is the worst-case
-// delay a fade tick can suffer?" - the second being the number that matters,
-// since loop()-driven fades are only smooth if no single pass runs long.
+// Answers "how hard is the Teensy actually working, and what is the worst-case delay a fade tick can suffer?" - 
+// the second being the number that matters, since loop()-driven fades are only smooth if no single pass runs long.
 //
-// Built on ARM_DWT_CYCCNT, the Cortex-M7's free-running cycle counter. It ticks
-// at F_CPU_ACTUAL (600MHz here) and wraps every ~7.2 seconds, which is harmless:
-// every measurement subtracts two reads taken microseconds apart, and unsigned
-// subtraction wraps correctly. The counter is already enabled and proven - the
-// TLC5947 driver's pulseGuard() leans on it via delayNanoseconds().
+// Built on ARM_DWT_CYCCNT, the Cortex-M7's free-running cycle counter. It ticks at F_CPU_ACTUAL (600MHz here) and wraps every ~7.2 seconds, 
+// which is harmless: every measurement subtracts two reads taken microseconds apart, and unsigned subtraction wraps correctly. 
+// The counter is already enabled and proven - the TLC5947 driver's pulseGuard() leans on it via delayNanoseconds().
 //
-// WHAT "LOAD" MEANS HERE. loop() never sleeps; it spins. So the CPU is always
-// executing something, and measuring "time inside loop()" would report ~100% and
-// tell you nothing. Instead the meter times only the blocks that do real work
-// and divides by wall-clock cycles. Idle passes cost nothing to measure because
-// they aren't measured at all.
-// - load — share of wall-clock cycles spent doing real work. My prediction is ~3-5%; 
-//   if it reads wildly higher, suspect the meter before the firmware.
+// WHAT "LOAD" MEANS HERE. loop() never sleeps; it spins. So the CPU is always executing something, and measuring "time inside loop()" 
+// would report ~100% and tell you nothing. Instead the meter times only the blocks that do real work and divides by wall-clock cycles. 
+// Idle passes cost nothing to measure because they aren't measured at all.
+// - load — share of wall-clock cycles spent doing real work. My prediction is ~3-5%; if it reads wildly higher, 
+//   suspect the meter before the firmware.
 // - pass peak — the longest single fade-tick block in the last second. 
-//   This is the one that matters. It's the worst-case delay a tick can suffer, and it's the direct test of 
-//   the "jitter well under a millisecond against a 5 ms tick" claim. If it ever approaches 5000 µs, 
-//   the loop-driven fade design is in trouble and the IntervalTimer fallback earns its keep.
+//   This is the one that matters. It's the worst-case delay a tick can suffer, and it's the direct test of the "jitter well under 
+//   a millisecond against a 5 ms tick" claim. If it ever approaches 5000 µs, the loop-driven fade design is in trouble and the 
+//   IntervalTimer fallback earns its keep.
 // - tick and write — last/peak µs for the curve math and the bit-banged shift. 
 //   write is the one to watch: ~150 µs is my estimate, never measured, and it's the number my whole architecture argument rests on.
 // - frames — frames applied per second. ~120 live (AC zero-cross); in a demo mode it'll be much lower, 
 //   since demos only publish on pattern changes.
 //
 // TWO CAVEATS, both small:
-//   - An ISR that preempts a measured block has its cycles charged to that
-//     block. The five pin ISRs run ~9k/sec at ~100 cycles each (well under 1%),
-//     so this doesn't move the number. Note they only fire on live MPU traffic -
-//     on the bench, in a demo mode, ISR cost reads as zero because it is zero.
-//   - The pot poll and demo pattern generation aren't instrumented: a few
-//     microseconds per second between them, far below the noise floor. Load is
-//     therefore a hair under-reported.
+//   - An ISR that preempts a measured block has its cycles charged to that block. 
+//     The five pin ISRs run ~9k/sec at ~100 cycles each (well under 1%), so this doesn't move the number. 
+//     Note they only fire on live MPU traffic - on the bench, in a demo mode, ISR cost reads as zero because it is zero.
+//   - The pot poll and demo pattern generation aren't instrumented: a few microseconds per second between them, 
+//     far below the noise floor. Load is therefore a hair under-reported.
 
 #if ENABLE_LOAD_METER
 
@@ -428,12 +420,10 @@ const uint32_t LOAD_REPORT_MS = 5000;
 
 // One instrumented block's stats for the current reporting window.
 //
-// add() and reset() are members rather than free functions on purpose: the
-// Arduino IDE auto-generates prototypes for free functions and injects them at
-// the top of the .ino, above this struct - so a free meterAccumulate(MeterStat&)
-// would be prototyped before MeterStat exists and fail to compile. Members are
-// never auto-prototyped, which sidesteps it entirely. Don't "simplify" these
-// back into free functions.
+// add() and reset() are members rather than free functions on purpose: the Arduino IDE auto-generates prototypes for 
+// free functions and injects them at the top of the .ino, above this struct - so a free meterAccumulate(MeterStat&)
+// would be prototyped before MeterStat exists and fail to compile. Members are never auto-prototyped, which sidesteps 
+// it entirely. Don't "simplify" these back into free functions.
 struct MeterStat {
   uint32_t total;   // cycles accumulated
   uint32_t last;    // most recent sample
@@ -523,14 +513,13 @@ void setup() {
   buildLampBitIndex();
 #endif
 
-  // begin() latches an all-zero frame and leaves BLANK high, so the LEDs are
-  // held hard-off until the first frame lights a lamp and loop() writes - which
-  // is also what releases BLANK. No garbage flash at power-on, no wasted write.
+  // begin() latches an all-zero frame and leaves BLANK high, so the LEDs are held hard-off until the first frame 
+  // lights a lamp and loop() writes - which is also what releases BLANK. No garbage flash at power-on, no wasted write.
   tlc.begin();
 
 #if ENABLE_LOAD_METER
-  // Deliberately no `while (!Serial)` - this board has to run standalone in a
-  // machine, and waiting for a USB host that will never arrive would hang it.
+  // Deliberately no `while (!Serial)` - this board has to run standalone in a machine, 
+  // and waiting for a USB host that will never arrive would hang it.
   Serial.begin(115200);
   meterWindowStartCycles = ARM_DWT_CYCCNT;
 #endif
@@ -551,7 +540,7 @@ void loop() {
     METER_BEGIN(frame);
     for (uint16_t ch = 0; ch < NUM_CHANNELS; ch++) {
       const uint8_t bit = channelToLampBit[ch];
-      if (bit == LAMP_BIT_NONE) continue;
+      if (bit == DED) continue;
       fade.setTarget(ch, ((lampBits >> bit) & 1ULL) != 0, now);
     }
     METER_END(frame, meterFrame);

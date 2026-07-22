@@ -1,4 +1,4 @@
-# led100-c
+# LED-100 firmware
 
 A drop-in replacement for the lamp-driver board in an early solid-state pinball
 machine.
@@ -41,23 +41,25 @@ from a bench pattern.
 - **Three TLC5947 drivers**, chained — 24 channels each, 72 total, of which 60
   correspond to the original machine's lamps.
 - **LEDs** in place of the original incandescent lamps.
-- A **momentary push-button** (demo/mode select) and a **potentiometer** (fade
-  speed) on the front panel.
+- A **momentary push-button** (mode select) and a **potentiometer** (fade speed)
+  on the front panel. A second pot is on the board but isn't read by the firmware
+  yet.
 
 ### Pin map
 
 The authoritative copy of this lives in the `#define`s at the top of
-[`v0-1.ino/v0-1.ino.ino`](v0-1.ino/v0-1.ino.ino) — if these ever disagree,
+[`LED-100-firmware.ino`](LED-100-firmware.ino) — if these ever disagree,
 believe the code.
 
 | Signal | Teensy pin | Notes |
 | --- | --- | --- |
-| AD0–AD3 | 3, 2, 1, 0 | Address lines from the MPU |
-| PD0–PD3 | 5, 6, 7, 8 | Group-enable lines (the original board's W/X/Y/Z) |
-| STROBE | 4 | Address latch |
+| AD0–AD3 | 5, 4, 3, 2 | Address lines from the MPU |
+| PD0–PD3 | 7, 8, 9, 10 | Group-enable lines (the original board's W/X/Y/Z) |
+| STROBE | 6 | Address latch |
 | TLC clock / data / latch / blank | 13 / 12 / 14 / 15 | To the first TLC5947 |
-| Demo button | 11 | Momentary to ground |
-| Fade-speed pot | A9 | Wiper to the pin, ends to 3.3 V and ground |
+| Mode button | 23 | Momentary to ground |
+| Fade-speed pot | A3 | Wiper to the pin, ends to 3.3 V and ground |
+| Second pot | A2 | Placeholder — on the board, nothing reads it yet |
 
 Signal names follow the original board's schematic, so the code, a scope probe,
 and the machine's service manual all use the same labels.
@@ -74,7 +76,7 @@ here as well as in the driver header. Best option first:
    fading*. Neither is fixable in software.
 
 The full explanation is in the header comment of
-[`v0-1.ino/TLC5947.h`](v0-1.ino/TLC5947.h).
+[`TLC5947.h`](TLC5947.h).
 
 ---
 
@@ -83,19 +85,12 @@ The full explanation is in the header comment of
 **Normal operation** needs no interaction: power it up and it decodes the MPU
 and drives the lamps.
 
-**The push-button** cycles through a live mode and three self-contained bench
-patterns, in order:
-
-| Press | Mode | What it does |
-| --- | --- | --- |
-| — | **Live** | Decode the real MPU input (the default at power-on) |
-| 1 | **Random flicker** | ~20% of lamps lit, reshuffled a few times a second |
-| 2 | **Blink** | All lamps on / all off, ~half a second each |
-| 3 | **Chase** | Steps through all 60 lamps one at a time |
-| 4 | back to **Live** | |
-
-The demo modes ignore the MPU entirely — handy for testing the LEDs and the fade
-feel on the bench with nothing else connected.
+**The push-button** cycles between live input and three LED test patterns —
+random, flash-all, and sequential. The patterns ignore the MPU entirely, which
+makes them handy for checking the LEDs and the fade feel on the bench with
+nothing else connected. They're a development aid and may not survive to the
+final build (`ENABLE_DEMO_MODES` in the sketch drops them, and the button with
+them); what the button ends up doing on a finished board is still open.
 
 **The potentiometer** sets the fade speed. Fade-out is always slower than
 fade-in, mimicking how a filament cools more slowly than it heats. It's meant to
@@ -106,13 +101,11 @@ be set once with the backbox open and then left alone.
 ## Configuring it
 
 The knobs a builder actually touches, all near the top of
-[`v0-1.ino/v0-1.ino.ino`](v0-1.ino/v0-1.ino.ino):
+[`LED-100-firmware.ino`](LED-100-firmware.ino):
 
-- **`ENABLE_DEMO_MODES`** — set to `0` for a final install to drop the demo
-  patterns and the mode button, leaving only live decode.
 - **`FADE_IN_CURVE` / `FADE_OUT_CURVE`** — the shape of the glow-up and
   die-away. Pick from the curves the fade engine offers
-  ([`v0-1.ino/FadeEngine.h`](v0-1.ino/FadeEngine.h)).
+  ([`FadeEngine.h`](FadeEngine.h)).
 - **`FADE_IN_MIN_MS` / `FADE_IN_MAX_MS` / `FADE_OUT_RATIO`** — the range the pot
   sweeps, and how much slower fade-out is than fade-in.
 - **`NUM_TLC5947`** — number of chained driver chips, if your board differs.
@@ -129,7 +122,7 @@ wiring, and is the thing to edit if a lamp lights the wrong LED.
 ## Building & flashing
 
 1. Install the **Arduino IDE** and **[Teensyduino](https://www.pjrc.com/teensy/td_download.html)**.
-2. Open [`v0-1.ino/v0-1.ino.ino`](v0-1.ino/v0-1.ino.ino).
+2. Open [`LED-100-firmware.ino`](LED-100-firmware.ino).
 3. Select **Tools → Board → Teensy 4.0**.
 4. Upload.
 
