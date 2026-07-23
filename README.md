@@ -65,10 +65,12 @@ Everything you need to understand, build, modify, or reproduce the board:
 The board reads the machine's original lamp-matrix signals, works out which lamps should be lit, and drives LEDs through three PWM LED drivers (TLC5947). A [Teensy 4.0] is the brain that runs the whole thing. The fade curves are calculated is done in software, so the glow-up and fade-out curves are adjustable. Full detail is in the [firmware README]().
 
 Here's how the PCB looks in KiCad:
-<img width="610" src="https://raw.githubusercontent.com/andrewduhan/LED-100/refs/heads/main/assets/pcb.png"> 
+
+<img width="610" src="https://raw.githubusercontent.com/andrewduhan/LED-100/refs/heads/main/assets/pcb.jpg"> 
 
 ...and here's the schematic:
-<img width="610" src="https://raw.githubusercontent.com/andrewduhan/LED-100/refs/heads/main/assets/schematic.png">
+
+<img width="610" src="https://raw.githubusercontent.com/andrewduhan/LED-100/refs/heads/main/assets/schematic.jpg">
 
 ---
 
